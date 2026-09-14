@@ -9,7 +9,7 @@
 # 特性：
 #   - 菜单式管理：安装 / 启动 / 停止 / 重启 / 卸载 / 更新 / 状态 / 日志 / 备份 / 访问地址 / 修改端口
 #   - 卸载可选连数据目录一起删除
-#   - 自动检测 Docker，已装则跳过，未装则用国内镜像源安装
+#   - 自动检测 Docker 与系统发行版，按系统选择正确安装源（Ubuntu/Debian 走 apt、CentOS/RHEL 系走 yum/dnf、其他走官方脚本）
 #   - SQLite 数据库（单文件，最省内存，1G 服务器无压力）
 #   - 自动配置 Docker 国内镜像加速
 #   - 自动生成随机 SESSION_SECRET / CRYPTO_SECRET
@@ -37,35 +37,102 @@ dc() {
   else docker-compose "$@"; fi
 }
 
-# ---------- Docker 检测 / 安装 ----------
-install_docker() {
-  info "未检测到 Docker，开始安装（国内镜像源）..."
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y ca-certificates curl gnupg
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://mirrors.cloud.tencent.com/docker-ce/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+# ---------- 系统识别 ----------
+detect_distro() {
+  DISTRO_ID="unknown"; DISTRO_LIKE=""; DISTRO_CODENAME=""
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    DISTRO_ID="${ID:-unknown}"
+    DISTRO_LIKE="${ID_LIKE:-}"
+    DISTRO_CODENAME="${VERSION_CODENAME:-${VERSION_ID:-}}"
+  fi
+}
+
+# ---------- Docker 安装（按系统选择正确源） ----------
+install_docker_apt() {
+  local id="$1" codename="$2"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  install -m 0755 -d /etc/apt/keyrings
+  local arch; arch="$(dpkg --print-architecture)"
+  # 默认用 Docker 官方源（通用，不依赖任何云厂商）；国内区域叠加阿里云公共镜像加速
+  local base="https://download.docker.com/linux/$id"
+  [ "${REGION:-global}" = "cn" ] && base="https://mirrors.aliyun.com/docker-ce/linux/$id"
+  if curl -fsSL "$base/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null; then
     chmod a+r /etc/apt/keyrings/docker.asc
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://mirrors.cloud.tencent.com/docker-ce/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+    echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] $base $codename stable" > /etc/apt/sources.list.d/docker.list
+    if apt-get update -y && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      return 0
+    fi
+  fi
+  # 镜像源失败，回退官方源
+  if [ "$base" != "https://download.docker.com/linux/$id" ]; then
+    warn "镜像源安装失败，回退官方源 download.docker.com ..."
+    base="https://download.docker.com/linux/$id"
+    curl -fsSL "$base/gpg" -o /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] $base $codename stable" > /etc/apt/sources.list.d/docker.list
     apt-get update -y
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y yum-utils
-    yum-config-manager --add-repo https://mirrors.cloud.tencent.com/docker-ce/linux/centos/docker-ce.repo
-    yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  else
-    curl -fsSL https://get.daocloud.io/docker | bash
   fi
+}
+
+install_docker_yum() {
+  # 默认官方源；国内区域叠加阿里云公共镜像
+  local repo="https://download.docker.com/linux/centos/docker-ce.repo"
+  [ "${REGION:-global}" = "cn" ] && repo="https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo"
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -y install dnf-plugins-core
+    dnf config-manager --add-repo "$repo"
+    dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  else
+    yum install -y yum-utils
+    yum-config-manager --add-repo "$repo"
+    yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  fi
+}
+
+install_docker_official() {
+  info "未识别到受支持的包管理器，使用官方一键脚本安装..."
+  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  sh /tmp/get-docker.sh
+}
+
+install_docker() {
+  detect_distro
+  info "未检测到 Docker，开始安装（检测到系统: ${DISTRO_ID} ${DISTRO_CODENAME}）..."
+  case "$DISTRO_ID" in
+    ubuntu)          install_docker_apt ubuntu "$DISTRO_CODENAME" ;;
+    debian)          install_docker_apt debian "$DISTRO_CODENAME" ;;
+    linuxmint)       install_docker_apt ubuntu "$DISTRO_CODENAME" ;;
+    kali)            install_docker_apt debian "$DISTRO_CODENAME" ;;
+    centos|rhel|rocky|almalinux|fedora|anolis|openanolis|ol)
+                     install_docker_yum ;;
+    *)
+      case "$DISTRO_LIKE" in
+        *debian*) install_docker_apt debian "$DISTRO_CODENAME" ;;
+        *rhel*|*fedora*) install_docker_yum ;;
+        *) install_docker_official ;;
+      esac ;;
+  esac
+  # 配置镜像加速（仅国内，使用通用公共镜像，不依赖特定云厂商）并启动
   mkdir -p /etc/docker
-  cat > /etc/docker/daemon.json <<'EOF'
+  if [ "${REGION:-global}" = "cn" ]; then
+    cat > /etc/docker/daemon.json <<'EOF'
 {
   "registry-mirrors": [
-    "https://mirror.ccs.tencentyun.com",
-    "https://docker.m.daocloud.io"
+    "https://docker.mirrors.ustc.edu.cn",
+    "https://hub-mirror.c.163.com"
   ]
 }
 EOF
+  else
+    cat > /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": []
+}
+EOF
+  fi
   systemctl enable --now docker
   info "Docker 安装完成。"
 }
@@ -78,8 +145,13 @@ ensure_docker() {
   fi
   if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
     warn "docker compose 缺失，尝试补齐..."
-    if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y docker-compose-plugin
-    elif command -v yum >/dev/null 2>&1; then yum install -y docker-compose-plugin; fi
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update -y && apt-get install -y docker-compose-plugin
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf -y install docker-compose-plugin
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y docker-compose-plugin
+    fi
     if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
       curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
       chmod +x /usr/local/bin/docker-compose
@@ -144,6 +216,7 @@ load_port() {
 
 # ---------- 各操作 ----------
 do_install() {
+  choose_region
   ensure_docker
   detect_image || return 1
   mkdir -p "$INSTALL_DIR"; cd "$INSTALL_DIR"
