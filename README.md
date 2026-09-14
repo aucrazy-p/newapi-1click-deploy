@@ -26,12 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/USER/newapi-1click-deploy/main/depl
 | 2 | 启动 | 启动已部署的服务 |
 | 3 | 停止 | 停止服务，保留数据 |
 | 4 | 重启 | 重启服务 |
-| 5 | 卸载 | 停止并移除容器与镜像（数据目录保留，二次确认） |
+| 5 | 卸载 | 停止并移除容器与镜像（二次确认；**会再问是否连数据目录一起删**） |
 | 6 | 更新 | 拉取最新镜像并重启 |
 | 7 | 状态 | 查看容器运行状态 |
 | 8 | 日志 | 查看最近 100 行日志 |
 | 9 | 备份 | 打包 `./data` 与 `./logs` 为 tar.gz |
 | 10 | 访问地址 | 打印当前对外访问 URL |
+| 11 | 修改端口 | 改宿主机映射端口（校验合法性/占用，自动改 compose 并重建） |
 | 0 | 退出 | — |
 
 ## 单行命令（免交互）
@@ -49,6 +50,7 @@ bash deploy.sh status      # 状态
 bash deploy.sh logs        # 日志
 bash deploy.sh backup      # 备份
 bash deploy.sh address     # 访问地址
+bash deploy.sh port        # 修改端口
 ```
 
 ## 可选环境变量
@@ -82,6 +84,6 @@ tar -czf backup.tar.gz -C /opt/new-api data logs
 ## 注意事项
 
 - 1G 内存下**不要**用 PostgreSQL/MySQL 方案，SQLite 是最稳的。
-- 若服务器在境外，镜像回退到 Docker Hub 即可，国内优先阿里云。
+- 镜像拉取顺序：阿里云 → github.ai.plus → Docker Hub。**国内服务器**走前两个加速；**境外服务器**前两个通常会失败、自动回退到 Docker Hub 直连（速度最快），无需手动改配置。若想境外跳过国内镜像加速，可把 `detect_image()` 里的候选列表只留 `calciumion/new-api:latest`。
 - 本方案为单机部署；多机/集群需固定 `SESSION_SECRET` 与 `CRYPTO_SECRET` 并共用数据库。
-- 卸载只移除容器与镜像，数据目录 `/opt/new-api/data` 默认保留。
+- 卸载默认只移除容器与镜像，数据目录 `/opt/new-api/data` 默认保留；选「5 卸载」时会再问一次是否连数据一起删。

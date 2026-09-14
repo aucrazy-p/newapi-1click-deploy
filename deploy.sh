@@ -4,10 +4,11 @@
 # 适用：1G 内存轻量服务器、国内网络
 #
 # 交互菜单： bash deploy.sh
-# 单行命令： bash deploy.sh install|start|stop|restart|uninstall|update|status|logs|backup|address
+# 单行命令： bash deploy.sh install|start|stop|restart|uninstall|update|status|logs|backup|address|port
 #
 # 特性：
-#   - 菜单式管理：安装 / 启动 / 停止 / 重启 / 卸载 / 更新 / 状态 / 日志 / 备份 / 访问地址
+#   - 菜单式管理：安装 / 启动 / 停止 / 重启 / 卸载 / 更新 / 状态 / 日志 / 备份 / 访问地址 / 修改端口
+#   - 卸载可选连数据目录一起删除
 #   - 自动检测 Docker，已装则跳过，未装则用国内镜像源安装
 #   - SQLite 数据库（单文件，最省内存，1G 服务器无压力）
 #   - 自动配置 Docker 国内镜像加速
@@ -163,9 +164,16 @@ do_logs()     { require_stack || return 1; cd "$INSTALL_DIR"; dc logs --tail=100
 do_uninstall() {
   require_stack || return 1
   cd "$INSTALL_DIR"
-  read -r -p "确认卸载？将停止并移除容器与镜像，数据目录 $INSTALL_DIR/data 保留 [y/N]: " ans
+  read -r -p "确认卸载 new-api（停止并移除容器与镜像）？[y/N]: " ans
   case "$ans" in
-    y|Y) dc down --rmi local -v; info "已卸载（数据目录已保留）。如需彻底删除：rm -rf $INSTALL_DIR";;
+    y|Y)
+      dc down --rmi local -v
+      read -r -p "是否同时删除数据目录（$INSTALL_DIR，含数据库/日志）？[y/N]: " del
+      case "$del" in
+        y|Y) rm -rf "$INSTALL_DIR"; info "已卸载并删除数据目录 $INSTALL_DIR。";;
+        *) info "已卸载，数据目录已保留（如需彻底删除：rm -rf $INSTALL_DIR）。";;
+      esac
+      ;;
     *) info "已取消。";;
   esac
 }
@@ -179,6 +187,26 @@ do_address() {
   info "访问地址: http://$(curl -fsSL ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print $1}'):${PORT}"
 }
 
+do_change_port() {
+  require_stack || return 1
+  cd "$INSTALL_DIR"
+  load_port
+  local newport
+  read -r -p "当前宿主机端口为 $PORT，请输入新端口 (1-65535): " newport
+  if ! [[ "$newport" =~ ^[0-9]+$ ]] || [ "$newport" -lt 1 ] || [ "$newport" -gt 65535 ]; then
+    error "端口无效，请输入 1-65535 之间的数字。"; return 1
+  fi
+  [ "$newport" = "$PORT" ] && { info "端口未变，无需修改。"; return 0; }
+  if dc ps -q new-api >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":$newport "; then
+    error "端口 $newport 已被占用，请换一个。"; return 1
+  fi
+  sed -i "s/^- '[0-9]*:3000'/- '$newport:3000'/" docker-compose.yml
+  echo "PORT=$newport" > "$ENV_FILE"
+  dc up -d
+  sleep 2
+  info "端口已修改为 $newport，访问地址: http://$(curl -fsSL ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print $1}'):$newport"
+}
+
 # ---------- 菜单 ----------
 show_menu() {
   echo
@@ -186,15 +214,15 @@ show_menu() {
   echo " 1) 安装       2) 启动       3) 停止"
   echo " 4) 重启       5) 卸载       6) 更新(升级)"
   echo " 7) 状态       8) 日志       9) 备份数据"
-  echo "10) 访问地址    0) 退出"
+  echo "10) 访问地址   11) 修改端口   0) 退出"
   echo -e "${CYAN}=============================${NC}"
 }
 
 # 单行命令模式： bash deploy.sh <action>
 if [ -n "${1:-}" ]; then
   case "$1" in
-    install|start|stop|restart|uninstall|update|status|logs|backup|address) "do_$1" ;;
-    *) error "未知操作: $1（可选: install/start/stop/restart/uninstall/update/status/logs/backup/address）"; exit 1 ;;
+    install|start|stop|restart|uninstall|update|status|logs|backup|address|port) "do_$1" ;;
+    *) error "未知操作: $1（可选: install/start/stop/restart/uninstall/update/status/logs/backup/address/port）"; exit 1 ;;
   esac
   exit 0
 fi
@@ -213,6 +241,7 @@ while true; do
     8)  do_logs ;;
     9)  do_backup ;;
     10) do_address ;;
+    11) do_change_port ;;
     0|q|Q) info "退出。"; exit 0 ;;
     *) warn "无效选择，请输入 0-10。" ;;
   esac
