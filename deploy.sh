@@ -91,14 +91,14 @@ ensure_docker() {
 choose_region() {
   REGION="${NEWAPI_REGION:-}"
   if [ -z "$REGION" ]; then
-    if [ -t 0 ]; then
-      read -r -p "服务器网络区域？[1]国内  [2]境外(默认): " r
+    if [ -t 1 ]; then
+      read -r -p "服务器网络区域？[1]国内  [2]境外(默认): " r </dev/tty
       case "$r" in
         1) REGION=cn ;;
         *) REGION=global ;;
       esac
     else
-      REGION=global   # 非交互（如 curl|bash）默认境外策略：直连 Docker Hub，避免慢国内源
+      REGION=global   # 非交互（无终端）默认境外策略：直连 Docker Hub，避免慢国内源
     fi
   fi
 }
@@ -193,11 +193,11 @@ do_logs()     { require_stack || return 1; cd "$INSTALL_DIR"; dc logs --tail=100
 do_uninstall() {
   require_stack || return 1
   cd "$INSTALL_DIR"
-  read -r -p "确认卸载 new-api（停止并移除容器与镜像）？[y/N]: " ans
+  read -r -p "确认卸载 new-api（停止并移除容器与镜像）？[y/N]: " ans </dev/tty
   case "$ans" in
     y|Y)
       dc down --rmi local -v
-      read -r -p "是否同时删除数据目录（$INSTALL_DIR，含数据库/日志）？[y/N]: " del
+      read -r -p "是否同时删除数据目录（$INSTALL_DIR，含数据库/日志）？[y/N]: " del </dev/tty
       case "$del" in
         y|Y) rm -rf "$INSTALL_DIR"; info "已卸载并删除数据目录 $INSTALL_DIR。";;
         *) info "已卸载，数据目录已保留（如需彻底删除：rm -rf $INSTALL_DIR）。";;
@@ -221,7 +221,7 @@ do_change_port() {
   cd "$INSTALL_DIR"
   load_port
   local newport
-  read -r -p "当前宿主机端口为 $PORT，请输入新端口 (1-65535): " newport
+  read -r -p "当前宿主机端口为 $PORT，请输入新端口 (1-65535): " newport </dev/tty
   if ! [[ "$newport" =~ ^[0-9]+$ ]] || [ "$newport" -lt 1 ] || [ "$newport" -gt 65535 ]; then
     error "端口无效，请输入 1-65535 之间的数字。"; return 1
   fi
@@ -258,7 +258,7 @@ fi
 
 while true; do
   show_menu
-  read -r -p "请选择 [0-10]: " c
+  read -r -p "请选择 [0-11]: " c </dev/tty
   case "$c" in
     1)  do_install ;;
     2)  do_start ;;
@@ -272,6 +272,6 @@ while true; do
     10) do_address ;;
     11) do_change_port ;;
     0|q|Q) info "退出。"; exit 0 ;;
-    *) warn "无效选择，请输入 0-10。" ;;
+    *) warn "无效选择，请输入 0-11。" ;;
   esac
 done
