@@ -1,9 +1,15 @@
 # newapi 轻量部署（SQLite 版）
 # 适用：1G 内存轻量服务器
 # 已装有 Docker 的用户可直接：docker compose up -d
+#
+# 镜像说明：
+#   默认用 Docker Hub 官方源（calciumion/new-api），境外/直连快。
+#   国内服务器若拉不动，可换成阿里云镜像：
+#     image: registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest
+#   （用 deploy.sh 菜单安装会自动按网络区域选源，无需手动改这里）
 services:
   new-api:
-    image: registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest
+    image: calciumion/new-api:latest
     container_name: new-api
     restart: always
     ports:

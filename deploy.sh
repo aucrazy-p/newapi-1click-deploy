@@ -13,7 +13,7 @@
 #   - SQLite 数据库（单文件，最省内存，1G 服务器无压力）
 #   - 自动配置 Docker 国内镜像加速
 #   - 自动生成随机 SESSION_SECRET / CRYPTO_SECRET
-#   - 镜像源自动回退：阿里云 → github.ai.plus → Docker Hub
+#   - 镜像源按网络区域选择 + 拉取超时兜底：国内[阿里云→github.ai.plus→Docker Hub]，境外[Docker Hub→github.ai.plus]
 #
 # 环境变量：
 #   NEWAPI_DIR   安装目录（默认 /opt/new-api）
@@ -87,16 +87,42 @@ ensure_docker() {
   fi
 }
 
-# ---------- 镜像选择（按顺序回退） ----------
+# ---------- 镜像选择（按网络区域决定候选 + 拉取超时兜底） ----------
+choose_region() {
+  REGION="${NEWAPI_REGION:-}"
+  if [ -z "$REGION" ]; then
+    if [ -t 0 ]; then
+      read -r -p "服务器网络区域？[1]国内  [2]境外(默认): " r
+      case "$r" in
+        1) REGION=cn ;;
+        *) REGION=global ;;
+      esac
+    else
+      REGION=global   # 非交互（如 curl|bash）默认境外策略：直连 Docker Hub，避免慢国内源
+    fi
+  fi
+}
+
+image_candidates() {
+  if [ "${REGION:-global}" = "cn" ]; then
+    CANDIDATES=( "registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest"
+                 "github.ai.plus/quantumous/new-api:latest"
+                 "calciumion/new-api:latest" )
+  else
+    CANDIDATES=( "calciumion/new-api:latest"
+                 "github.ai.plus/quantumous/new-api:latest" )
+  fi
+}
+
+PULL_TIMEOUT=120
 detect_image() {
-  local cands=( "registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest"
-                "github.ai.plus/quantumous/new-api:latest"
-                "calciumion/new-api:latest" )
+  choose_region
+  image_candidates
   IMAGE=""
-  for img in "${cands[@]}"; do
+  for img in "${CANDIDATES[@]}"; do
     info "尝试拉取镜像: $img"
-    if docker pull "$img" >/dev/null 2>&1; then IMAGE="$img"; info "镜像可用: $IMAGE"; break
-    else warn "拉取失败，尝试下一个"; fi
+    if timeout "$PULL_TIMEOUT" docker pull "$img" >/dev/null 2>&1; then IMAGE="$img"; info "镜像可用: $IMAGE"; break
+    else warn "拉取失败或超时（${PULL_TIMEOUT}s），尝试下一个"; fi
   done
   [ -z "$IMAGE" ] && { error "所有镜像源均失败，请检查网络后重试。"; return 1; }
   return 0
@@ -147,7 +173,10 @@ services:
       timeout: 10s
       retries: 3
 EOF
-  echo "PORT=${PORT}" > "$ENV_FILE"
+  cat > "$ENV_FILE" <<EOF
+PORT=${PORT}
+REGION=${REGION}
+EOF
   info "启动 new-api（端口 ${PORT}）..."
   dc up -d
   sleep 3

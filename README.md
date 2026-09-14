@@ -6,7 +6,7 @@
 - 自动检测并安装 Docker（已装则跳过，用国内镜像源安装）
 - 自动配置 Docker 国内镜像加速
 - 自动生成随机 `SESSION_SECRET` / `CRYPTO_SECRET`
-- 镜像源自动回退：阿里云 → github.ai.plus → Docker Hub
+- 镜像源按网络区域选择 + 拉取超时兜底：安装时问「国内/境外」，境外只直连 Docker Hub（不试慢国内源）；每次 `docker pull` 超 120s 自动跳下一个源，慢源不会卡死
 
 ## 一行部署（执行后进入菜单）
 
@@ -56,8 +56,10 @@ bash deploy.sh port        # 修改端口
 ## 可选环境变量
 
 ```bash
-NEWAPI_DIR=/opt/new-api NEWAPI_PORT=3000 bash deploy.sh install
+NEWAPI_DIR=/opt/new-api NEWAPI_PORT=3000 NEWAPI_REGION=cn bash deploy.sh install
 ```
+
+- `NEWAPI_REGION`：`cn`（国内源）或 `global`（境外直连 Docker Hub，默认）。非交互安装时用于跳过区域提问。
 
 ## 已有 Docker 的用户
 
@@ -84,6 +86,7 @@ tar -czf backup.tar.gz -C /opt/new-api data logs
 ## 注意事项
 
 - 1G 内存下**不要**用 PostgreSQL/MySQL 方案，SQLite 是最稳的。
-- 镜像拉取顺序：阿里云 → github.ai.plus → Docker Hub。**国内服务器**走前两个加速；**境外服务器**前两个通常会失败、自动回退到 Docker Hub 直连（速度最快），无需手动改配置。若想境外跳过国内镜像加速，可把 `detect_image()` 里的候选列表只留 `calciumion/new-api:latest`。
+- 镜像拉取：安装时选网络区域决定候选源，**境内**=阿里云→github.ai.plus→Docker Hub，**境外**=Docker Hub→github.ai.plus（直连最快，不试慢国内源）。每次 `docker pull` 带 120s 超时，慢到超时会自动跳下一个源，不会卡死。非交互（curl|bash）默认按境外策略；也可用 `NEWAPI_REGION=cn bash deploy.sh install` 强制国内源。
+- 仓库里的 `docker-compose.yml`（给已有 Docker 用户直用）默认 `calciumion/new-api:latest`（Docker Hub）；国内拉不动可改成阿里云镜像（文件内有注释）。
 - 本方案为单机部署；多机/集群需固定 `SESSION_SECRET` 与 `CRYPTO_SECRET` 并共用数据库。
 - 卸载默认只移除容器与镜像，数据目录 `/opt/new-api/data` 默认保留；选「5 卸载」时会再问一次是否连数据一起删。
