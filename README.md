@@ -16,7 +16,7 @@
 curl -fsSL https://raw.githubusercontent.com/aucrazy-p/newapi-1click-deploy/main/deploy.sh | bash
 ```
 
-> 脚本跑起来会显示菜单，输入 `1` 即开始安装。若你的服务器直连 GitHub raw 困难，可先走代理（如 `export https_proxy=http://127.0.0.1:3067` 后再执行）。
+> 脚本跑起来会显示菜单，输入 `1` 即开始安装。若服务器直连 GitHub raw 困难，可先下载再运行：`curl -fsSL <raw链接> -o deploy.sh && bash deploy.sh`。
 
 ## 菜单说明
 
