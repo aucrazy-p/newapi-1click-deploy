@@ -13,10 +13,10 @@
 在服务器上（root）执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USER/newapi-1click-deploy/main/deploy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aucrazy-p/newapi-1click-deploy/main/deploy.sh | bash
 ```
 
-> 把 `USER` 替换成你的 GitHub 用户名。脚本跑起来会显示菜单，输入 `1` 即开始安装。
+> 脚本跑起来会显示菜单，输入 `1` 即开始安装。若你的服务器直连 GitHub raw 困难，可先走代理（如 `export https_proxy=http://127.0.0.1:3067` 后再执行）。
 
 ## 菜单说明
 
