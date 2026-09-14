@@ -3,8 +3,8 @@
 针对 **轻量服务器** 优化的 New API 部署与管理方案，带交互菜单。脚本与云厂商无关：默认走 Docker 官方源，按系统发行版自动选择正确安装路径（Ubuntu/Debian 走 apt、CentOS/RHEL 系走 yum/dnf、其他走官方一键脚本），国内网络才叠加公共镜像加速。
 
 - 数据库用 **SQLite**（单文件，最省内存，1G 服务器无压力，重启不丢数据）
-- 自动检测系统发行版并安装 Docker（已装则跳过；默认官方源，**国内区域自动识别云厂商、优先用同云内网镜像**（腾讯云/阿里云自动识别，其他云回落公共镜像），失败时回退官方源）
-- 国内区域自动配置 Docker 镜像加速：识别到腾讯云用其内网镜像，其他云用公共镜像（中科大/网易）；也可用环境变量自定义任意云镜像
+- 自动检测系统发行版并安装 Docker（已装则跳过；国内区域走阿里云公共镜像源、境外走官方源，失败自动回退）
+- 国内区域自动配置 Docker 公共镜像加速（中科大/网易）；特殊网络可用环境变量自定义
 - 自动生成随机 `SESSION_SECRET` / `CRYPTO_SECRET`
 - 镜像源按网络区域选择 + 拉取超时兜底：安装时问「国内/境外」，境外只直连 Docker Hub（不试慢国内源）；每次 `docker pull` 超 120s 自动跳下一个源，慢源不会卡死
 
@@ -63,7 +63,7 @@ NEWAPI_DIR=/opt/new-api NEWAPI_PORT=3000 NEWAPI_REGION=cn bash deploy.sh install
 - `NEWAPI_APT_MIRROR`：自定义 Docker 安装源 base，覆盖自动识别。例如华为云用户：`https://mirrors.huaweicloud.com/docker-ce/linux`（已实测 ubuntu noble 可用）。
 - `NEWAPI_REGISTRY_MIRROR`：自定义 Docker 镜像加速地址，覆盖自动识别。例如各云内网镜像 `https://xxx.mirror.xxx.com`。
 
-> 云厂商识别说明：脚本只会**自动识别腾讯云与阿里云**（二者元数据地址互不相同、可靠）；其余云（华为云/AWS/Azure/GCP 等）落到公共镜像，或直接用上面两个环境变量指定自家内网镜像，从而做到与云厂商无关。
+> 与云厂商无关：脚本不做云厂商探测；任何云/裸机都按「国内/境外」区域选源，特殊网络直接用上面两个环境变量指定自家镜像即可。
 
 ## 已有 Docker 的用户
 
