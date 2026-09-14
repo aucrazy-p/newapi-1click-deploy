@@ -1,0 +1,24 @@
+# newapi 轻量部署（SQLite 版）
+# 适用：1G 内存轻量服务器
+# 已装有 Docker 的用户可直接：docker compose up -d
+services:
+  new-api:
+    image: registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest
+    container_name: new-api
+    restart: always
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+      - ERROR_LOG_ENABLED=true
+      # 多机/共享部署才需要固定，单机可留空，容器重启会重新随机
+      # - SESSION_SECRET=your_random_string
+      # - CRYPTO_SECRET=your_random_string
+    healthcheck:
+      test: ['CMD-SHELL', "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
