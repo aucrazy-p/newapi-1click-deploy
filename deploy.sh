@@ -11,13 +11,16 @@
 #   - 卸载可选连数据目录一起删除
 #   - 自动检测 Docker 与系统发行版，按系统选择正确安装源（Ubuntu/Debian 走 apt、CentOS/RHEL 系走 yum/dnf、其他走官方脚本）
 #   - SQLite 数据库（单文件，最省内存，1G 服务器无压力）
-#   - 自动配置 Docker 国内镜像加速
+#   - 自动识别云厂商（腾讯云/阿里云，二者元数据地址互不相同可可靠识别）；识别不到则回落公共镜像，可用 NEWAPI_APT_MIRROR / NEWAPI_REGISTRY_MIRROR 指定任意云镜像
 #   - 自动生成随机 SESSION_SECRET / CRYPTO_SECRET
 #   - 镜像源按网络区域选择 + 拉取超时兜底：国内[阿里云→github.ai.plus→Docker Hub]，境外[Docker Hub→github.ai.plus]
 #
 # 环境变量：
 #   NEWAPI_DIR   安装目录（默认 /opt/new-api）
 #   NEWAPI_PORT  对外端口（默认 3000）
+#   NEWAPI_REGION  cn/global（可跳过交互选择网络区域）
+#   NEWAPI_APT_MIRROR   自定义 Docker 安装源 base，覆盖自动识别（如华为云：https://mirrors.huaweicloud.com/docker-ce/linux）
+#   NEWAPI_REGISTRY_MIRROR  自定义 Docker 镜像加速地址，覆盖自动识别（如各云内网镜像 https://xxx.mirror.xxx.com）
 
 set -uo pipefail
 
@@ -48,6 +51,57 @@ detect_distro() {
   fi
 }
 
+# ---------- 云厂商识别（用于选择同云内网镜像，加速安装） ----------
+detect_cloud() {
+  CLOUD="unknown"
+  # 腾讯云元数据（仅腾讯云内网可达，超时即跳过）
+  if curl -s --connect-timeout 2 -m 3 -o /dev/null "http://metadata.tencentyun.com/latest/meta-data/" 2>/dev/null; then
+    CLOUD="tencent"
+  # 阿里云元数据
+  elif curl -s --connect-timeout 2 -m 3 -o /dev/null "http://100.100.100.200/latest/meta-data/" 2>/dev/null; then
+    CLOUD="aliyun"
+  fi
+}
+
+# 根据云厂商与区域返回 Docker apt 源 base（同云内网最快，识别不到回落公共/官方源）
+docker_apt_base() {
+  local id="$1"
+  if [ -n "${NEWAPI_APT_MIRROR:-}" ]; then
+    echo "${NEWAPI_APT_MIRROR%/}/$id"; return
+  fi
+  if [ "${REGION:-global}" != "cn" ]; then
+    echo "https://download.docker.com/linux/$id"; return
+  fi
+  case "${CLOUD:-unknown}" in
+    tencent) echo "https://mirrors.cloud.tencent.com/docker-ce/linux/$id" ;;
+    *)       echo "https://mirrors.aliyun.com/docker-ce/linux/$id" ;;
+  esac
+}
+
+docker_yum_repo() {
+  if [ -n "${NEWAPI_APT_MIRROR:-}" ]; then
+    echo "${NEWAPI_APT_MIRROR%/}/centos/docker-ce.repo"; return
+  fi
+  if [ "${REGION:-global}" != "cn" ]; then
+    echo "https://download.docker.com/linux/centos/docker-ce.repo"; return
+  fi
+  case "${CLOUD:-unknown}" in
+    tencent) echo "https://mirrors.cloud.tencent.com/docker-ce/linux/centos/docker-ce.repo" ;;
+    *)       echo "https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo" ;;
+  esac
+}
+
+docker_registry_mirrors() {
+  if [ -n "${NEWAPI_REGISTRY_MIRROR:-}" ]; then
+    echo "[\"${NEWAPI_REGISTRY_MIRROR}\"]"; return
+  fi
+  if [ "${REGION:-global}" != "cn" ]; then echo "[]"; return; fi
+  case "${CLOUD:-unknown}" in
+    tencent) echo '["https://mirror.ccs.tencentyun.com"]' ;;
+    *)       echo '["https://docker.mirrors.ustc.edu.cn","https://hub-mirror.c.163.com"]' ;;
+  esac
+}
+
 # ---------- Docker 安装（按系统选择正确源） ----------
 install_docker_apt() {
   local id="$1" codename="$2"
@@ -56,9 +110,8 @@ install_docker_apt() {
   apt-get install -y ca-certificates curl gnupg
   install -m 0755 -d /etc/apt/keyrings
   local arch; arch="$(dpkg --print-architecture)"
-  # 默认用 Docker 官方源（通用，不依赖任何云厂商）；国内区域叠加阿里云公共镜像加速
-  local base="https://download.docker.com/linux/$id"
-  [ "${REGION:-global}" = "cn" ] && base="https://mirrors.aliyun.com/docker-ce/linux/$id"
+  local base; base="$(docker_apt_base "$id")"
+  info "Docker apt 源: $base"
   if curl -fsSL "$base/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null; then
     chmod a+r /etc/apt/keyrings/docker.asc
     echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] $base $codename stable" > /etc/apt/sources.list.d/docker.list
@@ -78,9 +131,8 @@ install_docker_apt() {
 }
 
 install_docker_yum() {
-  # 默认官方源；国内区域叠加阿里云公共镜像
-  local repo="https://download.docker.com/linux/centos/docker-ce.repo"
-  [ "${REGION:-global}" = "cn" ] && repo="https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo"
+  local repo; repo="$(docker_yum_repo)"
+  info "Docker yum 源: $repo"
   if command -v dnf >/dev/null 2>&1; then
     dnf -y install dnf-plugins-core
     dnf config-manager --add-repo "$repo"
@@ -115,24 +167,14 @@ install_docker() {
         *) install_docker_official ;;
       esac ;;
   esac
-  # 配置镜像加速（仅国内，使用通用公共镜像，不依赖特定云厂商）并启动
+  # 配置镜像加速（仅国内）：优先同云内网镜像，加速 Docker Hub 拉取；并启动
   mkdir -p /etc/docker
-  if [ "${REGION:-global}" = "cn" ]; then
-    cat > /etc/docker/daemon.json <<'EOF'
+  local mirrors; mirrors="$(docker_registry_mirrors)"
+  cat > /etc/docker/daemon.json <<EOF
 {
-  "registry-mirrors": [
-    "https://docker.mirrors.ustc.edu.cn",
-    "https://hub-mirror.c.163.com"
-  ]
+  "registry-mirrors": $mirrors
 }
 EOF
-  else
-    cat > /etc/docker/daemon.json <<'EOF'
-{
-  "registry-mirrors": []
-}
-EOF
-  fi
   systemctl enable --now docker
   info "Docker 安装完成。"
 }
@@ -161,6 +203,7 @@ ensure_docker() {
 
 # ---------- 镜像选择（按网络区域决定候选 + 拉取超时兜底） ----------
 choose_region() {
+  [ -n "${REGION:-}" ] && return   # 幂等：只问一次（do_install 与 detect_image 都可能调用）
   REGION="${NEWAPI_REGION:-}"
   if [ -z "$REGION" ]; then
     if [ -t 1 ]; then
@@ -176,19 +219,26 @@ choose_region() {
 }
 
 image_candidates() {
-  if [ "${REGION:-global}" = "cn" ]; then
-    CANDIDATES=( "registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest"
-                 "github.ai.plus/quantumous/new-api:latest"
-                 "calciumion/new-api:latest" )
-  else
+  if [ "${REGION:-global}" != "cn" ]; then
     CANDIDATES=( "calciumion/new-api:latest"
+                 "github.ai.plus/quantumous/new-api:latest" )
+    return
+  fi
+  if [ "${CLOUD:-unknown}" = "aliyun" ]; then
+    # 阿里云：同网络优先阿里云容器镜像
+    CANDIDATES=( "registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest"
+                 "calciumion/new-api:latest"
+                 "github.ai.plus/quantumous/new-api:latest" )
+  else
+    # 腾讯云/其他云：靠同云或公共镜像加速 Docker Hub，故优先官方 Docker Hub 镜像
+    CANDIDATES=( "calciumion/new-api:latest"
+                 "registry.cn-hangzhou.aliyuncs.com/quantumous/new-api:latest"
                  "github.ai.plus/quantumous/new-api:latest" )
   fi
 }
 
 PULL_TIMEOUT=120
 detect_image() {
-  choose_region
   image_candidates
   IMAGE=""
   for img in "${CANDIDATES[@]}"; do
@@ -216,6 +266,11 @@ load_port() {
 
 # ---------- 各操作 ----------
 do_install() {
+  detect_cloud
+  if [ -n "${NEWAPI_APT_MIRROR:-}" ] || [ -n "${NEWAPI_REGISTRY_MIRROR:-}" ]; then
+    info "使用自定义镜像源覆盖：apt=${NEWAPI_APT_MIRROR:-默认} registry=${NEWAPI_REGISTRY_MIRROR:-默认}"
+  fi
+  info "检测到云环境: ${CLOUD:-unknown}"
   choose_region
   ensure_docker
   detect_image || return 1
@@ -241,7 +296,7 @@ services:
       - SESSION_SECRET=${SESS}
       - CRYPTO_SECRET=${CRYPTO}
     healthcheck:
-      test: ['CMD-SHELL', "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
+      test: ['CMD-SHELL', 'wget -q -O - http://localhost:3000/api/status || exit 1']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -251,7 +306,10 @@ PORT=${PORT}
 REGION=${REGION}
 EOF
   info "启动 new-api（端口 ${PORT}）..."
-  dc up -d
+  if ! dc up -d; then
+    error "启动失败，请运行「8 日志」或 cd $INSTALL_DIR && dc logs 查看。"
+    return 1
+  fi
   sleep 3
   info "部署完成！访问: http://$(curl -fsSL ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print $1}'):${PORT}"
   info "首次打开进入初始化页面，设置管理员账号密码即可。"
